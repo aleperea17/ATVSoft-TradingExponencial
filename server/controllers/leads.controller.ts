@@ -13,7 +13,7 @@ function fieldErrors(error: ZodError): Record<string, string> {
   return result
 }
 
-export function createLeadHandler(req: Request, res: Response): void {
+export async function createLeadHandler(req: Request, res: Response): Promise<void> {
   const parsed = leadInputSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({
@@ -23,7 +23,7 @@ export function createLeadHandler(req: Request, res: Response): void {
     return
   }
 
-  const lead = createLead({
+  const lead = await createLead({
     input: parsed.data,
     userAgent: String(req.get('user-agent') ?? '').slice(0, 400),
   })

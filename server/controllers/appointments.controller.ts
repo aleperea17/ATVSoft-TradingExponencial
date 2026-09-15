@@ -11,9 +11,9 @@ export function appointmentConfigHandler(_req: Request, res: Response): void {
   res.json(getAppointmentConfig())
 }
 
-export function appointmentStatusHandler(req: Request, res: Response): void {
+export async function appointmentStatusHandler(req: Request, res: Response): Promise<void> {
   const reference = String(req.params.reference ?? '')
-  const status = getPublicAppointmentStatus(reference)
+  const status = await getPublicAppointmentStatus(reference)
   if (!status) {
     res.status(404).json({ error: 'Referencia no encontrada' })
     return
@@ -21,14 +21,14 @@ export function appointmentStatusHandler(req: Request, res: Response): void {
   res.json(status)
 }
 
-export function videoCompletedHandler(req: Request, res: Response): void {
+export async function videoCompletedHandler(req: Request, res: Response): Promise<void> {
   const parsed = videoCompletedSchema.safeParse(req.body ?? {})
   if (!parsed.success) {
     res.status(400).json({ error: 'Datos inválidos', fields: fieldErrors(parsed.error) })
     return
   }
   try {
-    const result = markVideoCompleted(parsed.data.publicReference)
+    const result = await markVideoCompleted(parsed.data.publicReference)
     res.json(result)
   } catch (error) {
     const status = typeof error === 'object' && error && 'status' in error ? Number(error.status) : 500

@@ -23,6 +23,7 @@ function parseBoolean(value: string): boolean {
 
 const nodeEnv = read('NODE_ENV') || 'development'
 const isTest = nodeEnv === 'test'
+const isProduction = nodeEnv === 'production'
 
 const calendlyEnabledFlag = parseBoolean(read('CALENDLY_ENABLED'))
 const calendlyApiToken = read('CALENDLY_API_TOKEN')
@@ -42,13 +43,42 @@ if (!adminPasswordHash && !isTest) {
   )
 }
 
+const postgresUser = read('POSTGRES_USER') || 'te_app'
+const postgresPassword = read('POSTGRES_PASSWORD') || (isTest ? 'te_local_dev' : '')
+const postgresDb = read('POSTGRES_DB') || 'trading_exponencial'
+const postgresTestDb = read('POSTGRES_TEST_DB') || 'trading_exponencial_test'
+const postgresHost = read('POSTGRES_HOST') || '127.0.0.1'
+const postgresPort = read('POSTGRES_PORT') || '5432'
+
+function buildDatabaseUrl(): string {
+  const explicit = read('DATABASE_URL')
+  const password = postgresPassword || 'te_local_dev'
+
+  if (isTest) {
+    if (explicit.includes(postgresTestDb)) return explicit
+    return `postgres://${encodeURIComponent(postgresUser)}:${encodeURIComponent(password)}@${postgresHost}:${postgresPort}/${postgresTestDb}`
+  }
+
+  if (explicit) return explicit
+
+  if (isProduction) {
+    throw new Error('Falta la variable de entorno obligatoria: DATABASE_URL')
+  }
+
+  return `postgres://${encodeURIComponent(postgresUser)}:${encodeURIComponent(password)}@${postgresHost}:${postgresPort}/${postgresDb}`
+}
+
 export const env = {
   NODE_ENV: nodeEnv,
-  isProduction: nodeEnv === 'production',
+  isProduction,
   isTest,
   PORT: Number(read('PORT') || '3001'),
   FRONTEND_URL: requireValue('FRONTEND_URL', read('FRONTEND_URL') || (isTest ? 'http://localhost:5173' : '')),
-  DATABASE_PATH: read('DATABASE_PATH') || (isTest ? ':memory:' : './data/leads.sqlite'),
+  DATABASE_URL: buildDatabaseUrl(),
+  DATABASE_PATH: read('DATABASE_PATH'),
+  POSTGRES_USER: postgresUser,
+  POSTGRES_PASSWORD: postgresPassword,
+  POSTGRES_DB: postgresDb,
   ADMIN_EMAIL: requireValue('ADMIN_EMAIL', read('ADMIN_EMAIL') || (isTest ? 'admin@example.com' : '')),
   ADMIN_PASSWORD_HASH: adminPasswordHash || (isTest ? '$2a$10$invalidhashforunusableloginxxxxxxxxxxxxxx' : ''),
   SESSION_SECRET: requireValue(
@@ -74,6 +104,30 @@ export const CONTACT_STATUSES = [
 ] as const
 
 export type ContactStatus = (typeof CONTACT_STATUSES)[number]
+
+export function formatInLaRioja(value: Date | string | null | undefined): string | null {
+  if (value == null || value === '') return null
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`
+}
+
+export function formatInLaRiojaRequired(value: Date | string): string {
+  return formatInLaRioja(value) ?? ''
+}
 
 export function resolveDatabasePath(dbPath: string): string {
   if (dbPath === ':memory:') return dbPath

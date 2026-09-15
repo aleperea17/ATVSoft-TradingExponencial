@@ -6,14 +6,14 @@ Landing de calificación de **Trading Exponencial**, replicada a partir de la VS
 
 - Replicar la landing de la VSL.
 - Calificar prospectos con un cuestionario configurable.
-- Guardar cada envío en SQLite.
+- Guardar cada envío en Postgres.
 - Permitir al equipo comercial revisar, filtrar y exportar prospectos a Excel.
 - Dejar preparada una capa de integración con Calendly, desactivada por ahora.
 
 ## 2. Tecnologías
 
 - React 19, Vite, TypeScript, Tailwind CSS, React Router.
-- Node.js, Express, Zod, `node:sqlite`, ExcelJS.
+- Node.js, Express, Zod, `pg`, ExcelJS.
 - Vitest y Supertest.
 - Lucide React solo para iconos puntuales.
 
@@ -21,6 +21,7 @@ Landing de calificación de **Trading Exponencial**, replicada a partir de la VS
 
 - Node.js 22 o superior (se recomienda 24).
 - npm 11 o superior.
+- Docker (servicio `postgres` vía Compose).
 
 ## 4. Instalación
 
@@ -32,6 +33,18 @@ copy .env.example .env
 
 En macOS o Linux usa `cp .env.example .env`.
 
+Levantá Postgres (el override local publica `127.0.0.1:5432`):
+
+```bash
+docker compose up -d postgres
+```
+
+En el VPS, sin publicar el puerto:
+
+```bash
+docker compose -f docker-compose.yml up -d
+```
+
 ## 5. Variables de entorno
 
 Edita `.env`:
@@ -40,7 +53,10 @@ Edita `.env`:
 NODE_ENV=development
 PORT=3001
 FRONTEND_URL=http://localhost:5173
-DATABASE_PATH=./data/leads.sqlite
+POSTGRES_USER=te_app
+POSTGRES_PASSWORD=te_local_dev
+POSTGRES_DB=trading_exponencial
+DATABASE_URL=postgres://te_app:te_local_dev@127.0.0.1:5432/trading_exponencial
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD_HASH=
 SESSION_SECRET=
@@ -93,30 +109,25 @@ El comando imprime `ADMIN_PASSWORD_HASH=...`. Pégalo en `.env`. El correo del a
 
 No se almacenan contraseñas en texto plano: el hash usa bcrypt.
 
-## 9. Ubicación de la base SQLite
+## 9. Postgres
 
-Por defecto:
+La app usa `DATABASE_URL`. Compose levanta un contenedor `postgres` propio (`te_app` / `trading_exponencial`) con el volumen nombrado `te_pgdata`.
 
-```
-./data/leads.sqlite
-```
+En desarrollo, `docker-compose.override.yml` publica **solo** `127.0.0.1:5432`. En el VPS no copies ese override (o usá `-f docker-compose.yml`) y conectá la app por la red interna `te_internal`.
 
-La carpeta `data/` se crea sola al iniciar el backend. SQLite es la fuente principal. No se escribe un Excel en cada envío.
+Si queda un SQLite viejo con filas reales:
 
-`DATABASE_PATH` puede (y en un VPS **debe**) apuntar a una carpeta persistente, por ejemplo:
-
-```
-DATABASE_PATH=/var/lib/trading-exponencial/leads.sqlite
+```bash
+DATABASE_PATH=./data/leads.sqlite npm run import-sqlite
 ```
 
-La ruta puede ser absoluta. El backend crea el directorio padre si no existe.
+Si está vacío, no hace falta importar: levantá Postgres y listo.
 
 ### Advertencia de persistencia (VPS)
 
-- **No guardes la base únicamente dentro de una carpeta que se reemplaza en cada despliegue** (por ejemplo el directorio del clone, un `dist/` o un release que se borra al publicar). Si `DATABASE_PATH` queda dentro de esa carpeta, perderás los prospectos al desplegar.
-- Define `DATABASE_PATH` en un volumen o directorio persistente, fuera del código que se actualiza.
-- **Haz copias de seguridad periódicas de SQLite.** No copies el archivo a ciegas mientras hay escrituras: detén el proceso o usa el mecanismo seguro de SQLite (`.backup` / `VACUUM INTO`) para obtener un snapshot consistente. Si usas WAL, incluye también `-wal` y `-shm` cuando copies en caliente.
-- La carpeta de datos (por defecto `data/`) debe tener permisos de lectura y escritura solo para el usuario del proceso Node (por ejemplo `chmod 750` en el directorio y `640` en el `.sqlite`). No la dejes escribible por todo el mundo.
+- Los datos viven en el volumen Docker `te_pgdata`, no en el directorio del clone.
+- No publiques `5432` en `0.0.0.0`. Si Node corre en el host, bind a `127.0.0.1`.
+- Hacé backups con `pg_dump`, no copies el directorio de data de Postgres en caliente.
 
 ## 10. Exportación a Excel
 
@@ -201,26 +212,18 @@ FRONTEND_URL=https://tudominio.com
 
 ## 14. Copias de seguridad de la base
 
-No copies el `.sqlite` a ciegas mientras el backend escribe. Detén el proceso o usa el backup oficial de SQLite:
+Usá `pg_dump` contra el contenedor (el archivo no debe vivir solo dentro de un release que se pisa):
 
 ```bash
 mkdir -p /backups/leads
-sqlite3 data/leads.sqlite ".backup '/backups/leads/leads-$(date +%F).sqlite'"
-# alternativa consistente:
-sqlite3 data/leads.sqlite "VACUUM INTO '/backups/leads/leads-$(date +%F).sqlite'"
-```
-
-Si copias en caliente el archivo, incluye también `-wal` y `-shm` si existen:
-
-```bash
-cp data/leads.sqlite /backups/leads/leads-$(date +%F).sqlite
+docker compose exec -T postgres pg_dump -U te_app trading_exponencial > "/backups/leads/leads-$(date +%F).sql"
 ```
 
 En Windows PowerShell:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path backups | Out-Null
-Copy-Item data\leads.sqlite "backups\leads-$(Get-Date -Format yyyy-MM-dd).sqlite"
+docker compose exec -T postgres pg_dump -U te_app trading_exponencial | Set-Content -Encoding utf8 "backups\leads-$(Get-Date -Format yyyy-MM-dd).sql"
 ```
 
 Automatiza esta copia una vez al día.

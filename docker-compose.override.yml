@@ -1,0 +1,7 @@
+# Solo desarrollo local: publica Postgres en loopback para npm test / npm run dev.
+# En el VPS levantá sin este archivo:
+#   docker compose -f docker-compose.yml up -d
+services:
+  postgres:
+    ports:
+      - '127.0.0.1:5432:5432'

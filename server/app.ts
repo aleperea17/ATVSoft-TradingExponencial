@@ -1,6 +1,7 @@
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import express from 'express'
-import session from 'express-session'
+import session, { type SessionOptions } from 'express-session'
 import { env } from './config/env.ts'
 import { applySecurity } from './middleware/security.ts'
 import { publicError, sessionCookie } from './middleware/auth.ts'
@@ -8,7 +9,10 @@ import { leadsRouter } from './routes/leads.routes.ts'
 import { adminRouter } from './routes/admin.routes.ts'
 import { calendlyRouter } from './routes/calendly.routes.ts'
 import { appointmentsRouter } from './routes/appointments.routes.ts'
-import { getDb } from './database/db.ts'
+import { initDb } from './database/db.ts'
+
+const require = createRequire(import.meta.url)
+const connectPgSimple = require('connect-pg-simple') as typeof import('connect-pg-simple')
 
 declare module 'express-session' {
   interface SessionData {
@@ -16,23 +20,33 @@ declare module 'express-session' {
   }
 }
 
-export function createApp() {
-  getDb()
+export async function createApp() {
+  const pool = await initDb()
   const app = express()
 
   app.disable('x-powered-by')
   applySecurity(app)
   app.use(express.json({ limit: '32kb' }))
-  app.use(
-    session({
-      name: 'te.sid',
-      secret: env.SESSION_SECRET,
-      resave: false,
-      saveUninitialized: false,
-      proxy: env.isProduction,
-      cookie: sessionCookie,
-    }),
-  )
+
+  const sessionConfig: SessionOptions = {
+    name: 'te.sid',
+    secret: env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    proxy: env.isProduction,
+    cookie: sessionCookie,
+  }
+
+  if (!env.isTest) {
+    const PgSession = connectPgSimple(session)
+    sessionConfig.store = new PgSession({
+      pool,
+      tableName: 'session',
+      createTableIfMissing: false,
+    })
+  }
+
+  app.use(session(sessionConfig))
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true })

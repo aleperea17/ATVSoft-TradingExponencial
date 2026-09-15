@@ -30,12 +30,12 @@ const payload = {
 }
 
 describe('API de prospectos', () => {
-  beforeEach(() => {
-    resetDbForTests()
+  beforeEach(async () => {
+    await resetDbForTests()
   })
 
   it('registra un prospecto válido', async () => {
-    const app = createApp()
+    const app = await createApp()
     const response = await request(app).post('/api/leads').send(payload)
     expect(response.status).toBe(201)
     expect(response.body.ok).toBe(true)
@@ -44,20 +44,20 @@ describe('API de prospectos', () => {
   })
 
   it('rechaza datos inválidos', async () => {
-    const app = createApp()
+    const app = await createApp()
     const response = await request(app).post('/api/leads').send({ ...payload, email: 'mal' })
     expect(response.status).toBe(400)
     expect(response.body.error).toBeTruthy()
   })
 
   it('protege la exportación Excel', async () => {
-    const app = createApp()
+    const app = await createApp()
     const response = await request(app).get('/api/leads/export')
     expect(response.status).toBe(401)
   })
 
   it('genera un Excel autenticado con una fila por prospecto', async () => {
-    const app = createApp()
+    const app = await createApp()
     await request(app).post('/api/leads').send(payload)
     await request(app).post('/api/leads').send({ ...payload, email: 'otra@example.com', phone: '91111111111' })
 
@@ -76,7 +76,7 @@ describe('API de prospectos', () => {
   })
 
   it('funciona con CALENDLY_ENABLED=false', async () => {
-    const app = createApp()
+    const app = await createApp()
     const status = await request(app).get('/api/calendly/status')
     expect(status.body.enabled).toBe(false)
     const created = await request(app).post('/api/leads').send(payload)

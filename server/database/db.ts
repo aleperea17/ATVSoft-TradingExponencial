@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { DatabaseSync } from 'node:sqlite'
-import { CONTACT_STATUSES, resolveDatabasePath } from '../config/env.ts'
-import { env } from '../config/env.ts'
+import { Pool, type QueryResultRow } from 'pg'
+import { CONTACT_STATUSES, env } from '../config/env.ts'
 
 export const APPOINTMENT_STATUSES = [
   'pending',
@@ -58,30 +57,69 @@ export type LeadRecord = {
   utm_term: string
 }
 
-let db: DatabaseSync | null = null
+const contactStatusSql = CONTACT_STATUSES.map((status) => `'${status.replaceAll("'", "''")}'`).join(', ')
+const appointmentStatusSql = APPOINTMENT_STATUSES.map((status) => `'${status}'`).join(', ')
 
-export function getDb(): DatabaseSync {
-  if (!db) {
-    db = new DatabaseSync(resolveDatabasePath(env.DATABASE_PATH))
-    db.exec('PRAGMA journal_mode = WAL;')
-    db.exec('PRAGMA foreign_keys = ON;')
-    migrate(db)
+let pool: Pool | null = null
+let migrated = false
+
+export function getPool(): Pool {
+  if (!pool) {
+    pool = new Pool({
+      connectionString: env.DATABASE_URL,
+    })
+    pool.on('error', (error) => {
+      console.error('Error inesperado en el pool de Postgres:', error.message)
+    })
   }
-  return db
+  return pool
 }
 
-export function resetDbForTests(): void {
-  if (db) {
-    db.close()
-    db = null
-  }
+export async function query<T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const result = await getPool().query<T>(text, params)
+  return result.rows
 }
 
-function migrate(database: DatabaseSync): void {
-  database.exec(`
+export async function queryOne<T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params: unknown[] = [],
+): Promise<T | undefined> {
+  const rows = await query<T>(text, params)
+  return rows[0]
+}
+
+export async function initDb(): Promise<Pool> {
+  const current = getPool()
+  if (!migrated) {
+    try {
+      await migrate()
+      migrated = true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `No se pudo conectar a Postgres (${message}). Levantá el servicio con: docker compose up -d postgres`,
+      )
+    }
+  }
+  return current
+}
+
+export async function resetDbForTests(): Promise<void> {
+  await initDb()
+  await query('TRUNCATE leads, appointments RESTART IDENTITY CASCADE')
+}
+
+async function migrate(): Promise<void> {
+  const client = await getPool().connect()
+  try {
+    await client.query('SELECT pg_advisory_lock(871234)')
+    await client.query(`
     CREATE TABLE IF NOT EXISTS leads (
-      id TEXT PRIMARY KEY,
-      created_at TEXT NOT NULL,
+      id UUID PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL,
       full_name TEXT NOT NULL,
       email TEXT NOT NULL,
       whatsapp TEXT NOT NULL,
@@ -95,7 +133,7 @@ function migrate(database: DatabaseSync): void {
       willing_to_invest TEXT NOT NULL,
       preferred_time TEXT NOT NULL,
       comments TEXT NOT NULL DEFAULT '',
-      consent INTEGER NOT NULL,
+      consent BOOLEAN NOT NULL,
       contact_status TEXT NOT NULL,
       source_url TEXT NOT NULL DEFAULT '',
       referrer TEXT NOT NULL DEFAULT '',
@@ -104,29 +142,54 @@ function migrate(database: DatabaseSync): void {
       utm_medium TEXT NOT NULL DEFAULT '',
       utm_campaign TEXT NOT NULL DEFAULT '',
       utm_content TEXT NOT NULL DEFAULT '',
-      utm_term TEXT NOT NULL DEFAULT ''
+      utm_term TEXT NOT NULL DEFAULT '',
+      CONSTRAINT leads_contact_status_check CHECK (contact_status IN (${contactStatusSql}))
     );
 
     CREATE TABLE IF NOT EXISTS appointments (
-      id TEXT PRIMARY KEY,
+      id UUID PRIMARY KEY,
       public_reference TEXT NOT NULL UNIQUE,
-      lead_id TEXT,
+      lead_id UUID,
       calendly_event_uri TEXT,
       calendly_invitee_uri TEXT,
       status TEXT NOT NULL,
-      scheduled_at TEXT,
-      video_completed_at TEXT,
-      confirmed_at TEXT,
-      canceled_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (lead_id) REFERENCES leads(id)
+      scheduled_at TIMESTAMPTZ,
+      video_completed_at TIMESTAMPTZ,
+      confirmed_at TIMESTAMPTZ,
+      canceled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT appointments_status_check CHECK (status IN (${appointmentStatusSql})),
+      CONSTRAINT appointments_lead_id_fkey FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL
     );
+
+    CREATE TABLE IF NOT EXISTS session (
+      sid VARCHAR NOT NULL PRIMARY KEY,
+      sess JSON NOT NULL,
+      expire TIMESTAMP(6) NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_leads_created_at ON leads (created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_leads_contact_status ON leads (contact_status);
+    CREATE INDEX IF NOT EXISTS idx_appointments_lead_id ON appointments (lead_id);
+    CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON session (expire);
   `)
+  } finally {
+    try {
+      await client.query('SELECT pg_advisory_unlock(871234)')
+    } finally {
+      client.release()
+    }
+  }
 }
 
 export function createLeadId(): string {
   return randomUUID()
+}
+
+export function toConsentFlag(value: unknown): number {
+  if (value === true || value === 1 || value === '1' || value === 't' || value === 'true') return 1
+  return 0
 }
 
 export { CONTACT_STATUSES }

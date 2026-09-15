@@ -6,14 +6,14 @@ import { resetDbForTests } from '../database/db.ts'
 import { confirmationCopy } from '../services/appointments.service.ts'
 
 describe('API de appointments', () => {
-  beforeEach(() => {
-    resetDbForTests()
+  beforeEach(async () => {
+    await resetDbForTests()
     env.POST_APPOINTMENT_DEMO = false
     env.CALENDLY_ENABLED = false
   })
 
   it('no confirma una reserva falsa cuando Calendly está desactivado', async () => {
-    const app = createApp()
+    const app = await createApp()
     const response = await request(app).post('/api/appointments/video-completed').send({})
     expect(response.status).toBe(200)
     expect(response.body.display).toBe('video_completed')
@@ -25,7 +25,7 @@ describe('API de appointments', () => {
   })
 
   it('evita registros duplicados para la misma referencia', async () => {
-    const app = createApp()
+    const app = await createApp()
     const first = await request(app).post('/api/appointments/video-completed').send({})
     const reference = first.body.publicReference as string
     const second = await request(app).post('/api/appointments/video-completed').send({ publicReference: reference })
@@ -40,7 +40,7 @@ describe('API de appointments', () => {
   })
 
   it('rechaza una referencia inexistente', async () => {
-    const app = createApp()
+    const app = await createApp()
     const response = await request(app)
       .post('/api/appointments/video-completed')
       .send({ publicReference: 'token-que-no-existe-123456' })
@@ -49,7 +49,7 @@ describe('API de appointments', () => {
 
   it('permite el modo demo para la transición visual', async () => {
     env.POST_APPOINTMENT_DEMO = true
-    const app = createApp()
+    const app = await createApp()
     const response = await request(app).post('/api/appointments/video-completed').send({})
     expect(response.body.display).toBe('demo')
     expect(response.body.demo).toBe(true)

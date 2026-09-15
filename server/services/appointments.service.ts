@@ -1,8 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { calendlyService } from './calendly.service.ts'
-import { env } from '../config/env.ts'
-import { getDb, type AppointmentRecord, type AppointmentStatus } from '../database/db.ts'
-import { nowInLaRioja } from './leads.service.ts'
+import { env, formatInLaRioja, formatInLaRiojaRequired } from '../config/env.ts'
+import { queryOne, type AppointmentRecord, type AppointmentStatus } from '../database/db.ts'
 
 export type AppointmentDisplay = 'video_completed' | 'confirmed' | 'demo' | 'pending'
 
@@ -28,12 +27,12 @@ function row(record: Record<string, unknown>): AppointmentRecord {
     calendly_event_uri: record.calendly_event_uri ? String(record.calendly_event_uri) : null,
     calendly_invitee_uri: record.calendly_invitee_uri ? String(record.calendly_invitee_uri) : null,
     status: record.status as AppointmentStatus,
-    scheduled_at: record.scheduled_at ? String(record.scheduled_at) : null,
-    video_completed_at: record.video_completed_at ? String(record.video_completed_at) : null,
-    confirmed_at: record.confirmed_at ? String(record.confirmed_at) : null,
-    canceled_at: record.canceled_at ? String(record.canceled_at) : null,
-    created_at: String(record.created_at),
-    updated_at: String(record.updated_at),
+    scheduled_at: formatInLaRioja(record.scheduled_at as Date | string | null),
+    video_completed_at: formatInLaRioja(record.video_completed_at as Date | string | null),
+    confirmed_at: formatInLaRioja(record.confirmed_at as Date | string | null),
+    canceled_at: formatInLaRioja(record.canceled_at as Date | string | null),
+    created_at: formatInLaRiojaRequired(record.created_at as Date | string),
+    updated_at: formatInLaRiojaRequired(record.updated_at as Date | string),
   }
 }
 
@@ -44,50 +43,27 @@ export function getAppointmentConfig() {
   }
 }
 
-export function getAppointmentByReference(publicReference: string): AppointmentRecord | null {
-  const found = getDb()
-    .prepare('SELECT * FROM appointments WHERE public_reference = ? LIMIT 1')
-    .get(publicReference) as Record<string, unknown> | undefined
+export async function getAppointmentByReference(publicReference: string): Promise<AppointmentRecord | null> {
+  const found = await queryOne('SELECT * FROM appointments WHERE public_reference = $1 LIMIT 1', [publicReference])
   return found ? row(found) : null
 }
 
-function insertAppointment(status: AppointmentStatus): AppointmentRecord {
-  const db = getDb()
-  const now = nowInLaRioja()
-  const record: AppointmentRecord = {
-    id: randomUUID(),
-    public_reference: createPublicReference(),
-    lead_id: null,
-    calendly_event_uri: null,
-    calendly_invitee_uri: null,
-    status,
-    scheduled_at: null,
-    video_completed_at: null,
-    confirmed_at: null,
-    canceled_at: null,
-    created_at: now,
-    updated_at: now,
-  }
-  db.prepare(
+async function insertAppointment(status: AppointmentStatus): Promise<AppointmentRecord> {
+  const now = new Date()
+  const inserted = await queryOne(
     `INSERT INTO appointments (
       id, public_reference, lead_id, calendly_event_uri, calendly_invitee_uri,
       status, scheduled_at, video_completed_at, confirmed_at, canceled_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    record.id,
-    record.public_reference,
-    record.lead_id,
-    record.calendly_event_uri,
-    record.calendly_invitee_uri,
-    record.status,
-    record.scheduled_at,
-    record.video_completed_at,
-    record.confirmed_at,
-    record.canceled_at,
-    record.created_at,
-    record.updated_at,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    RETURNING *`,
+    [randomUUID(), createPublicReference(), null, null, null, status, null, null, null, null, now, now],
   )
-  return record
+
+  if (!inserted) {
+    throw new Error('No se pudo crear la cita')
+  }
+
+  return row(inserted)
 }
 
 function toPublic(record: AppointmentRecord): AppointmentPublicStatus {
@@ -130,32 +106,32 @@ export function confirmationCopy(display: AppointmentDisplay): { title: string; 
   }
 }
 
-export function getPublicAppointmentStatus(publicReference: string): AppointmentPublicStatus | null {
-  const record = getAppointmentByReference(publicReference)
+export async function getPublicAppointmentStatus(publicReference: string): Promise<AppointmentPublicStatus | null> {
+  const record = await getAppointmentByReference(publicReference)
   return record ? toPublic(record) : null
 }
 
-export function markVideoCompleted(publicReference?: string): AppointmentPublicStatus {
-  const now = nowInLaRioja()
-  let record = publicReference ? getAppointmentByReference(publicReference) : null
+export async function markVideoCompleted(publicReference?: string): Promise<AppointmentPublicStatus> {
+  const now = new Date()
+  let record = publicReference ? await getAppointmentByReference(publicReference) : null
   if (publicReference && !record) {
     throw Object.assign(new Error('Referencia no encontrada'), { status: 404 })
   }
   if (!record) {
-    record = insertAppointment('video_pending')
+    record = await insertAppointment('video_pending')
   }
 
   if (!record.video_completed_at) {
     const booking = calendlyService.resolveConfirmation(record)
     const nextStatus: AppointmentStatus = booking.confirmed ? 'confirmed' : 'video_completed'
-    getDb()
-      .prepare(
-        `UPDATE appointments
-         SET status = ?, video_completed_at = ?, confirmed_at = ?, updated_at = ?
-         WHERE id = ?`,
-      )
-      .run(nextStatus, now, booking.confirmed ? now : record.confirmed_at, now, record.id)
-    record = getAppointmentByReference(record.public_reference) as AppointmentRecord
+    const updated = await queryOne(
+      `UPDATE appointments
+       SET status = $1, video_completed_at = $2, confirmed_at = COALESCE($3, confirmed_at), updated_at = $4
+       WHERE id = $5
+       RETURNING *`,
+      [nextStatus, now, booking.confirmed ? now : null, now, record.id],
+    )
+    record = updated ? row(updated) : record
   }
 
   return toPublic(record)
