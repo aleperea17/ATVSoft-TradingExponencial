@@ -18,6 +18,35 @@ services:
     networks:
       - te_internal
 
+  app:
+    build: .
+    container_name: te-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      DATABASE_URL: postgres://${POSTGRES_USER:-te_app}:${POSTGRES_PASSWORD:-te_local_dev}@postgres:5432/${POSTGRES_DB:-trading_exponencial}
+    ports:
+      - '127.0.0.1:8005:3001'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3001/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - te_internal
+
 volumes:
   te_pgdata:
 
